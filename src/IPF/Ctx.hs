@@ -3,22 +3,22 @@ module IPF.Ctx
     Ctx' (..),
     Error (..),
     CtxM,
+    varIn,
     ensureVarIn,
     splitAtExt,
     applyNeg,
     applyPos,
     wellFormedNeg,
     wellFormedPos,
-    substVarPos,
-    substVarNeg,
     stripExtRight,
+    stripVarRight,
+    restrict,
   )
 where
 
 import Control.Category ((>>>))
+import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (throwError))
-import Data.Bifunctor (bimap)
-import Data.Function ((&))
 import Data.Map qualified as M
 import Data.Sequence qualified as Sq
 import IPF.Type qualified as T
@@ -35,14 +35,18 @@ data Error
   = VarMissing T.Var
   | ExtMissing T.Ext
   | NoExtRight Ctx T.Ext
+  | NoVarRight Ctx T.Var
 
 type CtxM = Either Error
 
+varIn :: T.Var -> Ctx -> Bool
+varIn x = \case
+  Sq.Empty -> False
+  (_ Sq.:|> Var y) | x == y -> True
+  (ctx Sq.:|> _) -> varIn x ctx
+
 ensureVarIn :: T.Var -> Ctx -> CtxM ()
-ensureVarIn x = \case
-  Sq.Empty -> throwError (VarMissing x)
-  (_ Sq.:|> Var y) | x == y -> pure ()
-  (ctx Sq.:|> _) -> ensureVarIn x ctx
+ensureVarIn x = varIn x >>> flip unless (throwError (VarMissing x))
 
 splitAtExt :: T.Ext -> Ctx -> CtxM (Ctx, Maybe T.Pos, Ctx)
 splitAtExt x = \case
@@ -53,35 +57,18 @@ splitAtExt x = \case
     (ctxl, found, ctxr) <- splitAtExt x ctx
     pure (ctxl, found, ctxr Sq.:|> c)
 
-type Subst = M.Map T.Ext T.Pos
-
-asSubst :: Ctx -> Subst
+asSubst :: Ctx -> T.Subst
 asSubst = Sq.reverse >>> foldMap go
   where
     go = \case
       Solved x p -> M.singleton x p
       _ -> mempty
 
-singleSubst :: Subst -> T.Pos -> T.Pos
-singleSubst s = \case
-  T.Ext x | Just p <- s M.!? x -> p
-  p -> p
-
 applyNeg :: Ctx -> T.Neg -> T.Neg
-applyNeg ctx = T.cataNeg (singleSubst (asSubst ctx)) T.Neg
+applyNeg ctx = T.cataNeg (T.singleSubst (asSubst ctx)) T.Neg
 
 applyPos :: Ctx -> T.Pos -> T.Pos
-applyPos ctx = T.cataPos (singleSubst (asSubst ctx)) T.Neg
-
-substVarPos :: T.Var -> T.Pos -> T.Pos -> T.Pos
-substVarPos x p = fmap (substVarNeg x p)
-
-substVarNeg :: T.Var -> T.Pos -> T.Neg -> T.Neg
-substVarNeg x p =
-  T.unNeg >>> \case
-    T.Forall y n
-      | x == y -> T.Forall y n & T.Neg
-    n -> bimap (substVarPos x p) (substVarNeg x p) n & T.Neg
+applyPos ctx = T.cataPos (T.singleSubst (asSubst ctx)) T.Neg
 
 wellFormedPos :: Ctx -> T.Pos -> CtxM ()
 wellFormedPos ctx = \case
@@ -101,3 +88,11 @@ stripExtRight x = \case
   (ctx Sq.:|> Unsolved y) | x == y -> pure ctx
   (ctx Sq.:|> Solved y _) | x == y -> pure ctx
   ctx -> throwError (NoExtRight ctx x)
+
+stripVarRight :: T.Var -> Ctx -> CtxM Ctx
+stripVarRight x = \case
+  (ctx Sq.:|> Var y) | x == y -> pure ctx
+  ctx -> throwError (NoVarRight ctx x)
+
+restrict :: Ctx -> Ctx -> CtxM Ctx
+restrict = error "TODO"

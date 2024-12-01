@@ -24,6 +24,7 @@ library
     exposed-modules:
         IPF.Ctx
         IPF.Expr
+        IPF.Inference
         IPF.SubTyping
         IPF.Type
 

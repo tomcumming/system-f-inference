@@ -1,15 +1,21 @@
 module IPF.SubTyping
-  ( subTypePos,
-    subTypeNeg,
+  ( Error (..),
+    SubTypeM,
+    ctxError,
+    ensureGround,
+    fresh,
+    pos,
+    neg,
   )
 where
 
 import Control.Category ((>>>))
 import Control.Monad (void)
 import Control.Monad.Error.Class (throwError)
-import Control.Monad.State (StateT, state)
-import Control.Monad.Trans (lift)
-import Data.Bifunctor (bimap, first)
+import Control.Monad.Except (ExceptT)
+import Control.Monad.State (State)
+import Control.Monad.State.Class (MonadState, state)
+import Data.Bifunctor (bimap)
 import Data.Bitraversable (bisequenceA)
 import Data.Function ((&))
 import Data.Sequence qualified as Sq
@@ -25,11 +31,12 @@ data Error
   | NoNegSubType T.Neg T.Neg
   | UnexpectedCtx Ctx.Ctx
 
-type SubTypeM = StateT T.Ext (Either Error)
+type SubTypeM = ExceptT Error (State T.Ext)
 
 ctxError :: Ctx.CtxM a -> SubTypeM a
-ctxError = first CtxError >>> lift
+ctxError = either (CtxError >>> throwError) pure
 
+-- "We call types that do not contain any existential variables ground"
 ensureGround :: T.Pos -> SubTypeM ()
 ensureGround t = T.cataPos go (bisequenceA >>> void) t
   where
@@ -37,11 +44,11 @@ ensureGround t = T.cataPos go (bisequenceA >>> void) t
       T.Ext {} -> throwError (TypeNotGround t)
       p -> sequenceA p & void
 
-fresh :: SubTypeM T.Ext
+fresh :: (MonadState T.Ext m) => m T.Ext
 fresh = state (\x -> (x, succ x))
 
-subTypePos :: Ctx -> T.Pos -> T.Pos -> SubTypeM Ctx
-subTypePos ctx = curry $ \case
+pos :: Ctx -> T.Pos -> T.Pos -> SubTypeM Ctx
+pos ctx = curry $ \case
   -- ARefl
   (T.Var x, T.Var y) | x == y -> do
     Ctx.ensureVarIn x ctx & ctxError
@@ -57,36 +64,36 @@ subTypePos ctx = curry $ \case
     pure (ctxl <> Sq.singleton (Ctx.Solved x p) <> ctxr)
   -- AShiftNeg
   (T.ShiftN n, T.ShiftN m) -> do
-    ctx' <- subTypeNeg ctx m n
-    subTypeNeg ctx' n (Ctx.applyNeg ctx' m)
+    ctx' <- neg ctx m n
+    neg ctx' n (Ctx.applyNeg ctx' m)
   -- No match
   (p, q) -> throwError (NoPosSubType p q)
 
-subTypeNeg :: Ctx -> T.Neg -> T.Neg -> SubTypeM Ctx
-subTypeNeg ctx =
+neg :: Ctx -> T.Neg -> T.Neg -> SubTypeM Ctx
+neg ctx =
   curry $
     bimap T.unNeg T.unNeg >>> \case
       -- AForallR
       (n, T.Forall x m) ->
-        subTypeNeg (ctx Sq.:|> Ctx.Var x) (T.Neg n) m >>= \case
+        neg (ctx Sq.:|> Ctx.Var x) (T.Neg n) m >>= \case
           (ctx' Sq.:|> Ctx.Var y) | x == y -> pure ctx'
           ctx' -> throwError (UnexpectedCtx ctx')
       -- AForallL
       (T.Forall x n, m) -> do
         -- We are sure m is not a Forall as it is matched above
         x' <- fresh
-        subTypeNeg
+        neg
           (ctx Sq.:|> undefined)
-          (Ctx.substVarNeg x (T.Ext x') n)
+          (T.substVarNeg x (T.Ext x') n)
           (T.Neg m)
           >>= (Ctx.stripExtRight x' >>> ctxError)
       -- AArrow
       (T.Arrow p n, T.Arrow q m) -> do
-        ctx' <- subTypePos ctx p q
-        subTypeNeg ctx' (Ctx.applyNeg ctx' n) m
+        ctx' <- pos ctx p q
+        neg ctx' (Ctx.applyNeg ctx' n) m
       -- AShiftPos
       (T.ShiftP p, T.ShiftP q) -> do
-        ctx' <- subTypePos ctx p q
-        subTypePos ctx' (Ctx.applyPos ctx' p) q
+        ctx' <- pos ctx p q
+        pos ctx' (Ctx.applyPos ctx' p) q
       -- No match
       (n, m) -> throwError (NoNegSubType (T.Neg n) (T.Neg m))

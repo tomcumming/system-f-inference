@@ -7,6 +7,12 @@ module IPF.Type
     Pos' (..),
     cataPos,
     cataNeg,
+    varFreeInPos,
+    varFreeInNeg,
+    Subst,
+    singleSubst,
+    substVarPos,
+    substVarNeg,
   )
 where
 
@@ -16,6 +22,8 @@ import Data.Bifoldable (Bifoldable, bifoldMap)
 import Data.Bifunctor (Bifunctor, bimap)
 import Data.Bitraversable (Bitraversable, bitraverse)
 import Data.Functor.Identity (runIdentity)
+import Data.Function ((&))
+import qualified Data.Map as M
 
 type Var = String
 
@@ -58,3 +66,35 @@ cataNeg fp fn =
   unNeg
     >>> bimap (cataPos fp fn) (cataNeg fp fn)
     >>> fn
+
+varFreeInNeg :: Var -> Neg -> Bool
+varFreeInNeg x =
+  unNeg >>> \case
+    Arrow p n -> varFreeInPos x p || varFreeInNeg x n
+    Forall y n
+      | x == y -> False
+      | otherwise -> varFreeInNeg x n
+    ShiftP p -> varFreeInPos x p
+
+varFreeInPos :: Var -> Pos -> Bool
+varFreeInPos x = \case
+  Var y -> x == y
+  Ext {} -> False
+  ShiftN n -> varFreeInNeg x n
+
+type Subst = M.Map Ext Pos
+
+singleSubst :: Subst -> Pos -> Pos
+singleSubst s = \case
+  Ext x | Just p <- s M.!? x -> p
+  p -> p
+
+substVarPos :: Var -> Pos -> Pos -> Pos
+substVarPos x p = fmap (substVarNeg x p)
+
+substVarNeg :: Var -> Pos -> Neg -> Neg
+substVarNeg x p =
+  unNeg >>> \case
+    Forall y n
+      | x == y -> Forall y n & Neg
+    n -> bimap (substVarPos x p) (substVarNeg x p) n & Neg
