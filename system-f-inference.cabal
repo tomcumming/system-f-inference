@@ -1,0 +1,36 @@
+cabal-version:      3.4
+name:               system-f-inference
+version:            0.1.0.0
+
+common shared
+    ghc-options: -Wall
+    default-language: GHC2021
+    default-extensions:
+        LambdaCase
+        DeriveGeneric
+        DerivingVia
+    build-depends:
+        base ^>=4.19.1.0,
+        containers,
+        data-fix,
+        mtl,
+        recursion-schemes,
+        transformers-compat,
+        text,
+
+library
+    import:           shared
+    hs-source-dirs:   src
+    exposed-modules:
+        IPF.Ctx
+        IPF.Expr
+        IPF.SubTyping
+        IPF.Type
+
+test-suite tests
+    import:           shared
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        system-f-inference
