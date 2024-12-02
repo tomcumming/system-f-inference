@@ -12,6 +12,7 @@ type Var = String
 data Value
   = Var Var
   | Thunk Comp
+  deriving (Show)
 
 data Comp
   = Abs Var T.Pos Comp
@@ -19,3 +20,4 @@ data Comp
   | Ret Value
   | Let Var Value [Value] Comp
   | ALet Var T.Pos Value [Value] Comp
+  deriving (Show)

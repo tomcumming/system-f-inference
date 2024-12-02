@@ -19,6 +19,8 @@ where
 import Control.Category ((>>>))
 import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (throwError))
+import Data.Foldable (toList)
+import Data.Function ((&))
 import Data.Map qualified as M
 import Data.Sequence qualified as Sq
 import IPF.Type qualified as T
@@ -36,6 +38,8 @@ data Error
   | ExtMissing T.Ext
   | NoExtRight Ctx T.Ext
   | NoVarRight Ctx T.Var
+  | RestrictMissing T.Ext Ctx
+  deriving (Show)
 
 type CtxM = Either Error
 
@@ -65,16 +69,18 @@ asSubst = Sq.reverse >>> foldMap go
       _ -> mempty
 
 applyNeg :: Ctx -> T.Neg -> T.Neg
-applyNeg ctx = T.cataNeg (T.singleSubst (asSubst ctx)) T.Neg
+applyNeg ctx = T.cataNeg (T.singleSubst (asSubst ctx) >>> T.Pos) T.Neg
 
 applyPos :: Ctx -> T.Pos -> T.Pos
-applyPos ctx = T.cataPos (T.singleSubst (asSubst ctx)) T.Neg
+applyPos ctx = T.cataPos (T.singleSubst (asSubst ctx) >>> T.Pos) T.Neg
 
 wellFormedPos :: Ctx -> T.Pos -> CtxM ()
-wellFormedPos ctx = \case
-  T.Var x -> ensureVarIn x ctx
-  T.Ext {} -> pure ()
-  T.ShiftN n -> wellFormedNeg ctx n
+wellFormedPos ctx =
+  T.unPos >>> \case
+    T.Var x -> ensureVarIn x ctx
+    T.Ext {} -> pure ()
+    T.Lst p -> wellFormedPos ctx p
+    T.ShiftN n -> wellFormedNeg ctx n
 
 wellFormedNeg :: Ctx -> T.Neg -> CtxM ()
 wellFormedNeg ctx =
@@ -94,5 +100,22 @@ stripVarRight x = \case
   (ctx Sq.:|> Var y) | x == y -> pure ctx
   ctx -> throwError (NoVarRight ctx x)
 
+extsIn :: Ctx -> M.Map T.Ext (Maybe T.Pos)
+extsIn = foldMap $ \case
+  Unsolved x -> M.singleton x Nothing
+  Solved x p -> M.singleton x (Just p)
+  Var {} -> mempty
+
 restrict :: Ctx -> Ctx -> CtxM Ctx
-restrict = error "TODO"
+restrict ctx1 = toList >>> traverse go >>> fmap Sq.fromList
+  where
+    exts = extsIn ctx1
+    goExt x = case exts M.!? x of
+      Nothing -> Left (RestrictMissing x ctx1)
+      Just Nothing -> Unsolved x & pure
+      Just (Just p) -> Solved x p & pure
+
+    go = \case
+      Solved x _ -> goExt x
+      Unsolved x -> goExt x
+      Var x -> Var x & pure

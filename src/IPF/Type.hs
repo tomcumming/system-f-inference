@@ -1,7 +1,7 @@
 module IPF.Type
   ( Var,
     Ext,
-    Pos,
+    Pos (..),
     Neg (..),
     Neg' (..),
     Pos' (..),
@@ -13,6 +13,7 @@ module IPF.Type
     singleSubst,
     substVarPos,
     substVarNeg,
+    normalise,
   )
 where
 
@@ -21,19 +22,33 @@ import Control.Monad.Writer (execWriter, tell)
 import Data.Bifoldable (Bifoldable, bifoldMap)
 import Data.Bifunctor (Bifunctor, bimap)
 import Data.Bitraversable (Bitraversable, bitraverse)
-import Data.Functor.Identity (runIdentity)
 import Data.Function ((&))
-import qualified Data.Map as M
+import Data.Functor.Identity (runIdentity)
+import Data.Map qualified as M
 
 type Var = String
 
 type Ext = Int
 
-data Pos' n
+data Pos' n p
   = Var Var
   | Ext Ext
+  | Lst p
   | ShiftN n
   deriving (Functor, Foldable, Traversable, Eq, Show)
+
+instance Bifunctor Pos' where
+  bimap fp fn = bitraverse (fp >>> pure) (fn >>> pure) >>> runIdentity
+
+instance Bifoldable Pos' where
+  bifoldMap fp fn = bitraverse (fp >>> tell) (fn >>> tell) >>> execWriter
+
+instance Bitraversable Pos' where
+  bitraverse fn fp = \case
+    Var x -> Var x & pure
+    Ext x -> Ext x & pure
+    Lst p -> Lst <$> fp p
+    ShiftN n -> ShiftN <$> fn n
 
 data Neg' p n
   = Arrow p n
@@ -53,15 +68,19 @@ instance Bitraversable Neg' where
     Forall x n -> Forall x <$> fn n
     ShiftP p -> ShiftP <$> fp p
 
-newtype Neg = Neg {unNeg :: Neg' (Pos' Neg) Neg}
+newtype Neg = Neg {unNeg :: Neg' Pos Neg}
   deriving (Eq, Show)
 
-type Pos = Pos' Neg
+newtype Pos = Pos {unPos :: Pos' Neg Pos}
+  deriving (Eq, Show)
 
-cataPos :: (Pos' n -> p) -> (Neg' p n -> n) -> Pos -> p
-cataPos fp fn = fmap (cataNeg fp fn) >>> fp
+cataPos :: (Pos' n p -> p) -> (Neg' p n -> n) -> Pos -> p
+cataPos fp fn =
+  unPos
+    >>> bimap (cataNeg fp fn) (cataPos fp fn)
+    >>> fp
 
-cataNeg :: (Pos' n -> p) -> (Neg' p n -> n) -> Neg -> n
+cataNeg :: (Pos' n p -> p) -> (Neg' p n -> n) -> Neg -> n
 cataNeg fp fn =
   unNeg
     >>> bimap (cataPos fp fn) (cataNeg fp fn)
@@ -77,20 +96,25 @@ varFreeInNeg x =
     ShiftP p -> varFreeInPos x p
 
 varFreeInPos :: Var -> Pos -> Bool
-varFreeInPos x = \case
-  Var y -> x == y
-  Ext {} -> False
-  ShiftN n -> varFreeInNeg x n
+varFreeInPos x =
+  unPos >>> \case
+    Var y -> x == y
+    Ext {} -> False
+    Lst p -> varFreeInPos x p
+    ShiftN n -> varFreeInNeg x n
 
 type Subst = M.Map Ext Pos
 
-singleSubst :: Subst -> Pos -> Pos
+singleSubst :: Subst -> Pos' Neg Pos -> Pos' Neg Pos
 singleSubst s = \case
-  Ext x | Just p <- s M.!? x -> p
+  Ext x | Just (Pos p) <- s M.!? x -> p
   p -> p
 
 substVarPos :: Var -> Pos -> Pos -> Pos
-substVarPos x p = fmap (substVarNeg x p)
+substVarPos x p =
+  unPos >>> \case
+    Var y | x == y -> p
+    p' -> bimap (substVarNeg x p) (substVarPos x p) p' & Pos
 
 substVarNeg :: Var -> Pos -> Neg -> Neg
 substVarNeg x p =
@@ -98,3 +122,12 @@ substVarNeg x p =
     Forall y n
       | x == y -> Forall y n & Neg
     n -> bimap (substVarPos x p) (substVarNeg x p) n & Neg
+
+-- TODO why do i need this?
+normalise :: Neg -> Neg
+normalise =
+  unNeg >>> \case
+    ShiftP (Pos (ShiftN n)) -> normalise n
+    n -> bimap normalisePos normalise n & Neg
+  where
+    normalisePos = unPos >>> bimap normalise normalisePos >>> Pos

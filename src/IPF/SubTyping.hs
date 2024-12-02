@@ -30,6 +30,7 @@ data Error
   | NoPosSubType T.Pos T.Pos
   | NoNegSubType T.Neg T.Neg
   | UnexpectedCtx Ctx.Ctx
+  deriving (Show)
 
 type SubTypeM = ExceptT Error (State T.Ext)
 
@@ -48,26 +49,30 @@ fresh :: (MonadState T.Ext m) => m T.Ext
 fresh = state (\x -> (x, succ x))
 
 pos :: Ctx -> T.Pos -> T.Pos -> SubTypeM Ctx
-pos ctx = curry $ \case
-  -- ARefl
-  (T.Var x, T.Var y) | x == y -> do
-    Ctx.ensureVarIn x ctx & ctxError
-    pure ctx
-  -- Ainst
-  (p, T.Ext x) -> do
-    ensureGround p
-    (ctxl, ctxr) <-
-      ctxError (Ctx.splitAtExt x ctx) >>= \case
-        (_, Just _, _) -> throwError (AlreadySolved x)
-        (ctxl, _, ctxr) -> pure (ctxl, ctxr)
-    Ctx.wellFormedPos ctxl p & ctxError
-    pure (ctxl <> Sq.singleton (Ctx.Solved x p) <> ctxr)
-  -- AShiftNeg
-  (T.ShiftN n, T.ShiftN m) -> do
-    ctx' <- neg ctx m n
-    neg ctx' n (Ctx.applyNeg ctx' m)
-  -- No match
-  (p, q) -> throwError (NoPosSubType p q)
+pos ctx =
+  curry $
+    bimap T.unPos T.unPos >>> \case
+      -- Added List rule, TODO this should probably be invariant
+      (T.Lst p, T.Lst q) -> pos ctx p q
+      -- ARefl
+      (T.Var x, T.Var y) | x == y -> do
+        Ctx.ensureVarIn x ctx & ctxError
+        pure ctx
+      -- Ainst
+      (p, T.Ext x) -> do
+        ensureGround (T.Pos p)
+        (ctxl, ctxr) <-
+          ctxError (Ctx.splitAtExt x ctx) >>= \case
+            (_, Just _, _) -> throwError (AlreadySolved x)
+            (ctxl, _, ctxr) -> pure (ctxl, ctxr)
+        Ctx.wellFormedPos ctxl (T.Pos p) & ctxError
+        pure (ctxl <> Sq.singleton (Ctx.Solved x (T.Pos p)) <> ctxr)
+      -- AShiftNeg
+      (T.ShiftN n, T.ShiftN m) -> do
+        ctx' <- neg ctx m n
+        neg ctx' n (Ctx.applyNeg ctx' m)
+      -- No match
+      (p, q) -> throwError (NoPosSubType (T.Pos p) (T.Pos q))
 
 neg :: Ctx -> T.Neg -> T.Neg -> SubTypeM Ctx
 neg ctx =
@@ -83,8 +88,8 @@ neg ctx =
         -- We are sure m is not a Forall as it is matched above
         x' <- fresh
         neg
-          (ctx Sq.:|> undefined)
-          (T.substVarNeg x (T.Ext x') n)
+          (ctx Sq.:|> Ctx.Unsolved x')
+          (T.substVarNeg x (T.Pos (T.Ext x')) n)
           (T.Neg m)
           >>= (Ctx.stripExtRight x' >>> ctxError)
       -- AArrow

@@ -28,10 +28,14 @@ library
         IPF.SubTyping
         IPF.Type
 
-test-suite tests
+test-suite test
     import:           shared
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          Main.hs
     build-depends:
-        system-f-inference
+        system-f-inference,
+        tasty,
+        tasty-hunit
+    other-modules:
+        Tests.IPF

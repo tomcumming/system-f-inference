@@ -1,4 +1,7 @@
 module Main (main) where
 
+import Test.Tasty (defaultMain)
+import Tests.IPF (ipfTests)
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented."
+main = defaultMain ipfTests

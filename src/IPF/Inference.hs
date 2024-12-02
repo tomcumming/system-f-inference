@@ -1,5 +1,7 @@
 module IPF.Inference
   ( Error (..),
+    Env,
+    InferM,
     inferValue,
     inferComp,
   )
@@ -27,6 +29,7 @@ data Error
   = SubTyError SubTy.Error
   | MissingVar Expr.Var
   | NoInferArgs [Expr.Value] T.Neg
+  deriving (Show)
 
 type Env = M.Map Expr.Var T.Pos
 
@@ -44,7 +47,7 @@ lookupVar x = asks (M.!? x) >>= maybe (throwError (MissingVar x)) pure
 inferValue :: Ctx -> Expr.Value -> InferM (T.Pos, Ctx)
 inferValue ctx = \case
   Expr.Var x -> lookupVar x & fmap (,ctx)
-  Expr.Thunk c -> inferComp ctx c & fmap (first T.ShiftN)
+  Expr.Thunk c -> inferComp ctx c & fmap (first (T.ShiftN >>> T.Pos))
 
 inferComp :: Ctx -> Expr.Comp -> InferM (T.Neg, Ctx)
 inferComp ctx = \case
@@ -64,22 +67,23 @@ inferComp ctx = \case
     (m, ctx') <- inferValue ctx v & fmap (first (T.ShiftP >>> T.Neg))
     (q, ctx'') <- inferArgs ctx' ss m & fmap (first T.ShiftN)
     -- TODO whats the difference between FEV() and ground?
-    SubTy.ensureGround q & subTyM
+    SubTy.ensureGround (T.Pos q) & subTyM
     ctx''' <- Ctx.restrict ctx'' ctx & ctxM
-    inferComp ctx''' t & local (M.insert x q)
+    inferComp ctx''' t & local (M.insert x (T.Pos q))
   -- Aambiguouslet
   Expr.ALet x p v ss t -> do
     (m, ctx') <- inferValue ctx v & fmap (first (T.ShiftP >>> T.Neg))
     (q, ctx'') <- inferArgs ctx' ss m & fmap (first T.ShiftN)
-    ctx''' <- SubTy.pos ctx'' p q & subTyM
-    ctx4 <- SubTy.pos ctx''' (Ctx.applyPos ctx''' q) p & subTyM
+    ctx''' <- SubTy.pos ctx'' p (T.Pos q) & subTyM
+    ctx4 <- SubTy.pos ctx''' (Ctx.applyPos ctx''' (T.Pos q)) p & subTyM
     ctx5 <- Ctx.restrict ctx4 ctx & ctxM
     inferComp ctx5 t & local (M.insert x p)
 
 inferArgs :: Ctx -> [Expr.Value] -> T.Neg -> InferM (T.Neg, Ctx)
 inferArgs ctx =
   curry $
-    second T.unNeg >>> \case
+    -- TODO why normalise?
+    second (T.normalise >>> T.unNeg) >>> \case
       -- ASpineNil
       ([], n) -> pure (T.Neg n, ctx)
       -- ASpineCons
@@ -91,7 +95,10 @@ inferArgs ctx =
         -- ASpineTypeAbsIn
         | T.varFreeInNeg x n -> do
             x' <- SubTy.fresh
-            inferArgs (ctx Sq.:|> Ctx.Unsolved x') s (T.substVarNeg x (T.Ext x') n)
+            inferArgs
+              (ctx Sq.:|> Ctx.Unsolved x')
+              s
+              (T.substVarNeg x (T.Pos (T.Ext x')) n)
         -- ASpineTypeAbsNotIn
         | otherwise -> inferArgs ctx s n
       -- Otherwise
